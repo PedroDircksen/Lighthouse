@@ -11,6 +11,19 @@ services:
       - portainer_data:/data
       - /var/run/docker.sock:/var/run/docker.sock
 
+  nginx:
+    build: ./nginx
+    container_name: nginx
+    restart: unless-stopped
+    environment:
+      - TZ=America/Sao_Paulo
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./ssl:/etc/nginx/ssl
+
+
   bot:
     build:
       context: .
