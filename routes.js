@@ -2,7 +2,7 @@ const express = require('express');
 const { sendMessage } = require('./src/whatsapp/wa');
 const router = express.Router()
 
-router.get('/message/send', async (req, res) => {
+router.post('/message/send', async (req, res) => {
   const { phone, message } = req.body;
 
   try {
