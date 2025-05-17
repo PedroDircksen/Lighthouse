@@ -23,11 +23,11 @@ router.post('/message/send', async (req, res) => {
 
 })
 
-router.post('/mail/send', async (req, res) => {
+router.post('/mail/send', (req, res) => {
   const { email, subject, message } = req.body;
 
   try {
-    const response = await transporter.sendMail({
+    transporter.sendMail({
       from: process.env.MAIL_USERNAME,
       to: email,
       subject: subject,
@@ -39,8 +39,6 @@ router.post('/mail/send', async (req, res) => {
       }
       console.log("Email sent:", info.response);
     })
-
-    console.log("Email response:", response);
 
     return res.status(200).json({ message: "Email sent successfully" });
   } catch (error) {
