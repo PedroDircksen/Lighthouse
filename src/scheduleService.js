@@ -87,7 +87,6 @@ const taskSendUpdates = cron.schedule('*/5 * * * * *', async () => {
                 const aba = names[0];
 
                 sheets.fetchAll(`${aba}!A1:C`).then(async (data) => {
-                    console.log(data);
                     for (const item of data) {
                         await sendMessage(item["Telefone (WhatsApp)"], message.parts[0].text);
                         // Random delay between 2-5 seconds
