@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const fs = require('fs').promises;
 const path = require('path');
 const { sendMessage } = require('./whatsapp/wa');
+const { GoogleSheetsService } = require('../googleApi');
 
 const CLICKUP_URL = 'https://api.clickup.com/api/v2/list/901312348941/task?statuses[]=complete';
 const CLICKUP_OPTS = {
@@ -78,7 +79,24 @@ const taskSendUpdates = cron.schedule('*/5 * * * * *', async () => {
             // Aciona a Gemini API e obtém a mensagem
             const message = await generateWhatsAppMessage(task);
             console.log(`Mensagem gerada: ${JSON.stringify(message)}`);
-              await sendMessage('49998085663', message.parts[0].text)
+            const sheets = new GoogleSheetsService();
+
+            sheets.getSheetNames().then(async (names) => {
+                console.log('Abas disponíveis:', names);
+
+                const aba = names[0];
+
+                sheets.fetchAll(`${aba}!A1:C`).then(async (data) => {
+                    console.log(data);
+                    for (const item of data) {
+                        console.log(item);
+                        await sendMessage(item["Telefone (WhatsApp)"], message.parts[0].text);
+                        // Random delay between 2-5 seconds
+                        const delay = Math.floor(Math.random() * (5000 - 2000) + 2000);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                })
+            })
 
         }
 
