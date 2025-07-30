@@ -1,3 +1,4 @@
 node_modules
 !auth_info_baileys\hackatorion\teste
-# auth_info_baileys/*
+auth_info_baileys/*
+package-lock.json

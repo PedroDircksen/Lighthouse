@@ -7,7 +7,7 @@ const { GoogleSheetsService } = require('../googleApi');
 const CLICKUP_URL = 'https://api.clickup.com/api/v2/list/901312348941/task?statuses[]=complete';
 const CLICKUP_OPTS = {
     method: 'GET',
-    headers: { Authorization: process.env.CLICKUP_API_KEY }
+    headers: { Authorization: process.env.CLICKUP_API_TOKEN }
 };
 
 const PROCESSED_FILE = path.join(__dirname, 'processedTasks.json');

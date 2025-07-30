@@ -1,181 +1,122 @@
 const {
     default: makeWASocket,
-    Browsers,
     DisconnectReason,
     isJidBroadcast,
     makeCacheableSignalKeyStore,
     useMultiFileAuthState,
+    fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 const fs = require('fs');
-const QRCode = require('qrcode')
-const { join } = require('path');
-
-
+const QRCode = require('qrcode');
 const { formatJid } = require('../utils/baileys');
 
 const sessions = new Map();
-const RECONNECT_INTERVAL = Number(process.env.RECONNECT_INTERVAL || 0);
+const RECONNECT_INTERVAL = Number(process.env.RECONNECT_INTERVAL || 5000);
+const MAX_RECONNECT_RETRIES = Number(process.env.MAX_RECONNECT_RETRIES || 5);
+const retries = new Map();
 
-async function init() {
-
+async function cleanEmptyAuthFolders() {
     const path = './auth_info_baileys';
-    const subfolders = fs.readdirSync(path, { withFileTypes: true }).filter(dirent => dirent.isDirectory());
+    const subfolders = fs.readdirSync(path, { withFileTypes: true })
+        .filter(dirent => dirent.isDirectory());
     for (const folder of subfolders) {
         const folderPath = `${path}/${folder.name}`;
         if (!fs.readdirSync(folderPath).length) {
             fs.rmSync(folderPath, { recursive: true, force: true });
         }
     }
-
-    const sessionId = 'hackatorion';
-    const sessionPath = `./auth_info_baileys/${sessionId}`;
-    if (!fs.existsSync(sessionPath)) {
-        fs.rmSync(sessionPath, { recursive: true, force: true });
-    } else {
-        await createSession({ sessionId });
-    }
-
 }
 
-async function createSession({ sessionId = 'hackatorion' }) {
+async function init() {
+    await cleanEmptyAuthFolders();
+    await createSession({ sessionId: 'hackatorion' });
+}
+
+function shouldReconnect(sessionId) {
+    const attempts = retries.get(sessionId) || 0;
+    if (attempts < MAX_RECONNECT_RETRIES) {
+        retries.set(sessionId, attempts + 1);
+        return true;
+    }
+    return false;
+}
+
+async function createSession({ sessionId }) {
+    let socket;
+    const destroySession = async (logout = true) => {
+        if (logout && socket) await socket.logout();
+        const sessionPath = `./auth_info_baileys/${sessionId}`;
+        if (fs.existsSync(sessionPath)) {
+            fs.rmSync(sessionPath, { recursive: true, force: true });
+        }
+        sessions.delete(sessionId);
+        retries.delete(sessionId);
+    };
+
+    let version = [2, 2314, 11];
     try {
-        let connectionStatus = { connection: 'close' };
+        const latest = await fetchLatestBaileysVersion();
+        version = latest.version;
+    } catch (err) {
+        console.warn('Erro ao obter versão do WhatsApp Web', err);
+    }
 
-        const destroySession = async (logout = true) => {
-            try {
-                if (logout) await socket.logout();
-                const sessionPath = `./auth_info_baileys/${sessionId}`;
-                if (fs.existsSync(sessionPath)) {
-                    fs.rmSync(sessionPath, { recursive: true, force: true });
-                }
-            } catch (error) {
-                console.error(error, 'Error during session destruction');
-            } finally {
-                sessions.delete(sessionId);
-            }
-        };
+    const { state, saveCreds } = await useMultiFileAuthState(`./auth_info_baileys/${sessionId}`);
+    socket = makeWASocket({
+        version,
+        printQRInTerminal: true,
+        browser: ['Hackatorion', "Desktop", "2.0"],
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, console),
+        },
+        generateHighQualityLinkPreview: true,
+        shouldIgnoreJid: isJidBroadcast,
+    });
 
-        const onConnectionClose = async () => {
-            const code = connectionStatus.lastDisconnect?.error?.output?.statusCode;
-            const restartRequired = code === DisconnectReason.restartRequired;
+    sessions.set(sessionId, { ...socket, destroy: destroySession });
 
-            if (code === DisconnectReason.loggedOut) {
+    socket.ev.on('creds.update', saveCreds);
+
+    socket.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+        if (qr) {
+            console.clear();
+            console.log(await QRCode.toString(qr, { type: 'terminal', small: true }));
+        }
+
+        if (connection === 'open') {
+            retries.delete(sessionId);
+            socket.sendPresenceUpdate('unavailable');
+        }
+
+        if (connection === 'close') {
+            const code = lastDisconnect?.error?.output?.statusCode;
+            if (code === DisconnectReason.loggedOut || !shouldReconnect(sessionId)) {
                 await destroySession();
                 return;
             }
-            setTimeout(
-                () => createSession({ sessionId }),
-                restartRequired ? 0 : RECONNECT_INTERVAL
-            );
-        };
+            const timeout = code === DisconnectReason.restartRequired ? 0 : RECONNECT_INTERVAL;
+            console.log(`Reconectando sessão "${sessionId}" em ${timeout}ms.`);
+            setTimeout(() => createSession({ sessionId }), timeout);
+        }
+    });
 
-        const { state, saveCreds } = await useMultiFileAuthState(`./auth_info_baileys/${sessionId}`);
-        const socket = makeWASocket({
-            printQRInTerminal: true,
-            browser: ['Hackatorion', "Desktop", "2.0"],
-            generateHighQualityLinkPreview: true,
-            auth: {
-                creds: state.creds,
-                keys: state.keys
-            },
-            shouldIgnoreJid: isJidBroadcast,
-            getMessage: async (key) => {
-                const message = await Message.findOne({
-                    where: { sessionId, remoteJid: key.remoteJid, msgId: key.id }
-                });
-                return message?.message;
-            },
-        });
-
-        sessions.set(sessionId, { ...socket, destroy: destroySession });
-
-        socket.ev.on('creds.update', saveCreds);
-        socket.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect, qr } = update
-
-            if (qr) {
-                console.clear()
-                console.log(await QRCode.toString(qr, { type: 'terminal', small: true }))
-            }
-
-            if (connection === 'open') socket.sendPresenceUpdate('unavailable')
-            if (connection === 'close') await onConnectionClose()
-        });
-        socket.ev.on('messages.upsert', async (messages) => {
-            socket.sendPresenceUpdate('unavailable');
-        });
-
-    } catch (error) {
-        console.error(error, 'Error creating session');
-    }
+    socket.ev.on('messages.upsert', () => {
+        socket.sendPresenceUpdate('unavailable');
+    });
 }
 
 async function sendMessage(phone, content, options = {}) {
-    try {
-        const session = getSession('hackatorion');
+    const session = sessions.get('hackatorion');
+    if (!session) throw new Error('Sessão não encontrada.');
 
-        if (!session) {
-            throw new Error('Session not found');
-        }
-
-        if (!phone || !content) {
-            throw new Error('Phone and content are required');
-        }
-
-        const jid = await formatJid(phone, session);
-
-        const message = await session.sendMessage(jid, { text: content, ...options });
-
-        return message;
-    } catch (error) {
-        if (error.text === 'The number does not exist') {
-            console.error(`Erro ao enviar mensagem no WhatsApp: o número ${celular} não existe!`);
-        } else {
-            console.error(`Erro ao enviar mensagem no WhatsApp: ${error.text}`, { stack: error.stack });
-        }
-    }
-}
-
-function getSession(sessionId) {
-    return sessions.get(sessionId);
-}
-
-function deleteSession(sessionId) {
-    const sessionPath = `./auth_info baileys/${sessionId}`
-
-    if (fs.existsSync(sessionPath)) {
-        fs.rmSync(sessionPath, { recursive: true });
-    }
-
-    Session.destroy({ where: { sessionId } });
-
-    sessions.get(sessionId)?.destroy();
-}
-
-function sessionExists(sessionId) {
-    return sessions.has(sessionId) && sessions.get(sessionId).user;
-}
-
-async function jidExists(session, jid, type = 'number') {
-    try {
-        if (type === 'number') {
-            const [result] = await session.onWhatsApp(jid);
-            return !!result?.exists;
-        }
-
-        const groupMeta = await session.groupMetadata(jid);
-        return !!groupMeta.id;
-    } catch (error) {
-        return Promise.reject(error);
-    }
+    const jid = await formatJid(phone, session);
+    return await session.sendMessage(jid, { text: content, ...options });
 }
 
 module.exports = {
     init,
     createSession,
-    getSession,
-    deleteSession,
-    sessionExists,
-    jidExists,
+    getSession: (id) => sessions.get(id),
     sendMessage
 };
