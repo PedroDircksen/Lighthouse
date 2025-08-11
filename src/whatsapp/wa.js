@@ -65,7 +65,7 @@ async function createSession({ sessionId }) {
     socket = makeWASocket({
         version,
         printQRInTerminal: true,
-        browser: ['Hackatorion', "Desktop", "2.0"],
+        browser: ['Lighthouse', "Desktop", "2.0"],
         auth: {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, console),

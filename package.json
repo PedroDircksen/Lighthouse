@@ -4,7 +4,7 @@
   "description": "\"# Hackatorion\"",
   "main": "index.js",
   "scripts": {
-    "start": "nodemon ./index.js --ignore ./auth_info_baileys --ignore ./src/processedTasks.json",
+    "start": "nodemon ./index.js --ignore ./auth_info_baileys --ignore ./src/processedTasks.json --ignore ./src/clickup.cursor.json",
     "start-prod": "node index.js",
     "restart-prod": "pm2 restart index.js --name api && pm2 restart ./src/whatsapp/index.js --name whatsapp",
     "stop-prod": "pm2 delete all"
@@ -18,6 +18,7 @@
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "node-cron": "^4.0.5",
+    "node-fetch": "^3.3.2",
     "nodemailer": "^7.0.3",
     "nodemon": "^3.1.10",
     "qrcode": "^1.5.4",
