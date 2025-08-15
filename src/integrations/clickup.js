@@ -17,12 +17,18 @@ function isDone(status, doneList) {
 
 function extractPhoneFromCustomFields(customFields = [], fieldId) {
     if (!fieldId) return null;
+
     const f = customFields.find(cf => cf.id === fieldId);
+
     if (!f) return null;
+
     const raw = f.value || f.text || f.string || '';
     const onlyDigits = String(raw).replace(/\D+/g, '');
+
     if (!onlyDigits) return null;
+
     const br = onlyDigits.startsWith('55') ? onlyDigits : `55${onlyDigits}`;
+    
     return `${br}@s.whatsapp.net`;
 }
 

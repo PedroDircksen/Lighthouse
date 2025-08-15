@@ -1,7 +1,7 @@
 const express = require('express');
 const { sendMessage } = require('./src/whatsapp/wa');
-const { transporter } = require('./src/utils/mailService');
 const router = express.Router()
+const { selectDataByColumnValue, insertData } = require('./src/database/database');
 
 router.post('/message/send', async (req, res) => {
   const { phone, message } = req.body;
@@ -28,6 +28,22 @@ function randomDelay(minMs, maxMs) {
   return new Promise(resolve => setTimeout(resolve, delay));
 }
 
+router.post('/auth/:token', async (req, res) => {
+  try {
+    const token = req.params
+
+    const responseDb = await selectDataByColumnValue('Client', 'jwt', token);
+
+    if (responseDb.success) {
+      return res.status(200).json({token: token})
+    }
+  } catch (error) {
+    console.error("Error sending message:", error);
+    return res.status(401).json({ error: "Invalid Token" });
+  }
+});
+
+// essa rota vai parar de existir
 router.post('/message/bulk-send', async (req, res) => {
   const { phones, message } = req.body;
 

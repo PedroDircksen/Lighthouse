@@ -1,7 +1,7 @@
 const cron = require('node-cron');
-const fs = require('fs').promises;
-const path = require('path');
 const { sendMessage } = require('./whatsapp/wa');
+const { insertData, selectAllData, selectDataByColumnValue } = require('./database/database')
+const Client = require('./models/client')
 const {
     getTeamTasks, getTask,
     hasTagCS, isDone,
@@ -9,9 +9,6 @@ const {
     extractPhoneFromCustomFieldsByName
 } = require('./integrations/clickup');
 const { generateWhatsAppMessage } = require('./services/notifier');
-
-const PROCESSED_FILE = path.join(__dirname, 'processedTasks.json');
-const CURSOR_FILE = path.join(__dirname, 'clickup.cursor.json');
 
 const env = {
     token: process.env.CLICKUP_API_TOKEN,
@@ -22,33 +19,21 @@ const env = {
     doneStatuses: new Set(String(process.env.CLICKUP_DONE_STATUSES || 'done,complete').split(',').map(s => s.trim().toLowerCase())),
 };
 
-async function readJsonSafely(file, fallback) {
-    try {
-        const raw = await fs.readFile(file, 'utf8');
-        return JSON.parse(raw);
-    } catch {
-        return fallback;
-    }
-}
-
-async function saveJson(file, data) {
-    await fs.writeFile(file, JSON.stringify(data, null, 2));
-}
-
 async function loadProcessed() {
-    return readJsonSafely(PROCESSED_FILE, []);
-}
-
-async function saveProcessed(ids) {
-    await saveJson(PROCESSED_FILE, ids);
+    return await selectAllData('ProcessedTasks', []);
 }
 
 async function loadCursor() {
-    return readJsonSafely(CURSOR_FILE, { date_updated_gt: 0 });
+    return await selectAllData('Cursor', { date_updated_gt: 0 });
+}
+
+async function saveProcessed(ids) {
+    const payload = ids.map(id => ({ id: id }));
+    await insertData('ProcessedTasks', payload);
 }
 
 async function saveCursor(cursor) {
-    await saveJson(CURSOR_FILE, cursor);
+    await insertData('Cursor', cursor);
 }
 
 /**
@@ -81,7 +66,7 @@ async function resolveClientJid({ task, env }) {
 async function processTask(task, { processedIds, env }) {
     // Filtro: status concluído + tag CS
     if (!isDone(task.status, env.doneStatuses)) return false;
-    if (!hasTagCS(task.tags, env.tag)) return false;
+    if (!hasTagCS(task.tags, env.tag)) return false; 
 
     if (processedIds.includes(task.id)) return false;
 
@@ -91,7 +76,18 @@ async function processTask(task, { processedIds, env }) {
         return false;
     }
 
-    const message = await generateWhatsAppMessage({ taskName: task.name, epicName, taskDescription: task.description });
+    const phone = jid.split('@')[0];
+    const epic_id = task.custom_fields
+        .filter(cf => cf.type_config.subcategory_inverted_name == 'Épics')
+        .map(cf => cf.value[0]['id']);
+
+    let client = await selectDataByColumnValue('Client', 'phone', phone, '');
+    if(client == ''){
+        client = new Client(phone, epic_id);
+        await insertData("Client", client.formatDataToInsert())
+    }
+
+    const message = await generateWhatsAppMessage(client, { taskName: task.name, epicName, taskDescription: task.description });
     const res = await sendMessage(jid, message);
 
     if (res && res.error) {
@@ -130,16 +126,25 @@ const taskSendUpdates = cron.schedule('*/1 * * * *', async () => {
                 if (updated > maxUpdated) maxUpdated = updated;
 
                 const sent = await processTask(t, { processedIds, env });
-                if (sent) processedIds.push(t.id), anySuccess = true;
+                if (sent) {
+                    processedIds.push(t.id);
+                    anySuccess = true;
+                }
             }
 
             if (last_page || tasks.length === 0) break;
             page += 1;
         }
 
-        if (anySuccess) await saveProcessed([...new Set(processedIds)]);
+// possivel bug ao existir uma task com a tag cs, mas não possui nenhum número ou épico vinculado
+// ele não irá salvar esse id no banco e ficará espamando mensagem para um cliente ou para todos
+
+        if (anySuccess) {
+            await saveProcessed([...new Set(processedIds)]);
+        }
+
         if (maxUpdated > (cursor.date_updated_gt || 0)) {
-            await saveCursor({ date_updated_gt: maxUpdated });
+            await saveCursor(maxUpdated);
         }
     } catch (err) {
         console.error('Erro em taskSendUpdates:', err);
