@@ -1,7 +1,7 @@
 const cron = require('node-cron');
 const { sendMessage } = require('./whatsapp/wa');
-const { insertData, selectAllData, selectDataByColumnValue } = require('./database/database')
-const Client = require('./models/client')
+const { insertData, selectAllData, selectDataByColumnValue } = require('./database/database');
+const Client = require('./models/client');
 const {
     getTeamTasks, getTask,
     hasTagCS, isDone,
@@ -28,7 +28,7 @@ async function loadCursor() {
 }
 
 async function saveProcessed(ids) {
-    const payload = ids.map(id => ({ id: id }));
+    const payload = ids.map(id => ({ id }));
     await insertData('ProcessedTasks', payload);
 }
 
@@ -36,11 +36,6 @@ async function saveCursor(cursor) {
     await insertData('Cursor', cursor);
 }
 
-/**
- * Resolve o JID do cliente:
- * 1) Campo custom da Task (se existir)
- * 2) Campo custom do Épico (pai) – via mapeamento dos épicos na lista
- */
 async function resolveClientJid({ task, env }) {
     // 1) acha o épico via relacionamento (automático)
     const epicTaskId = extractEpicTaskIdAuto(task.custom_fields);
@@ -65,37 +60,51 @@ async function resolveClientJid({ task, env }) {
 
 async function processTask(task, { processedIds, env }) {
     // Filtro: status concluído + tag CS
-    if (!isDone(task.status, env.doneStatuses)) return false;
-    if (!hasTagCS(task.tags, env.tag)) return false; 
+    if (!isDone(task.status, env.doneStatuses)) return { markProcessed: false, sent: false };
+    if (!hasTagCS(task.tags, env.tag)) return { markProcessed: false, sent: false };
 
-    if (processedIds.includes(task.id)) return false;
+    if (processedIds.includes(task.id)) return { markProcessed: false, sent: false };
 
     const { jid, epicName } = await resolveClientJid({ task, env });
     if (!jid) {
         console.warn(`Task ${task.id} sem telefone mapeado (task/épico).`);
-        return false;
+        // Marcamos como processada para não ficar tentando para sempre
+        return { markProcessed: true, sent: false };
     }
 
     const phone = jid.split('@')[0];
-    const epic_id = task.custom_fields
-        .filter(cf => cf.type_config.subcategory_inverted_name == 'Épics')
-        .map(cf => cf.value[0]['id']);
+
+    // Extração defensiva do(s) épico(s)
+    const epic_id = (task.custom_fields || [])
+        .filter(cf =>
+            cf?.type_config?.subcategory_inverted_name === 'Épics' &&
+            Array.isArray(cf?.value) &&
+            cf.value.length > 0
+        )
+        .map(cf => cf.value[0]?.id)
+        .filter(Boolean);
 
     let client = await selectDataByColumnValue('Client', 'phone', phone, '');
-    if(client == ''){
+    if (client == '') {
         client = new Client(phone, epic_id);
-        await insertData("Client", client.formatDataToInsert())
+        await insertData('Client', client.formatDataToInsert());
     }
 
-    const message = await generateWhatsAppMessage(client, { taskName: task.name, epicName, taskDescription: task.description });
+    const message = await generateWhatsAppMessage(client, {
+        taskName: task.name,
+        epicName,
+        taskDescription: task.description
+    });
+
     const res = await sendMessage(jid, message);
 
     if (res && res.error) {
         console.error(`Falha ao enviar para ${jid} task ${task.id}:`, res.error);
-        return false;
+        // Mesmo com erro de envio, marcamos como processada para evitar loop/spam
+        return { markProcessed: true, sent: false };
     }
 
-    return true;
+    return { markProcessed: true, sent: true };
 }
 
 const taskSendUpdates = cron.schedule('*/1 * * * *', async () => {
@@ -107,9 +116,12 @@ const taskSendUpdates = cron.schedule('*/1 * * * *', async () => {
 
         const processedIds = await loadProcessed();
         const cursor = await loadCursor();
+        const processedBefore = await loadProcessed();
+
 
         let page = 0;
         let maxUpdated = Number(cursor.date_updated_gt || 0);
+        let anyProcessed = false;
         let anySuccess = false;
 
         while (true) {
@@ -125,9 +137,12 @@ const taskSendUpdates = cron.schedule('*/1 * * * *', async () => {
                 const updated = Number(t.date_updated || t.date_closed || 0);
                 if (updated > maxUpdated) maxUpdated = updated;
 
-                const sent = await processTask(t, { processedIds, env });
-                if (sent) {
+                const result = await processTask(t, { processedIds, env });
+                if (result?.markProcessed) {
                     processedIds.push(t.id);
+                    anyProcessed = true;
+                }
+                if (result?.sent) {
                     anySuccess = true;
                 }
             }
@@ -136,11 +151,11 @@ const taskSendUpdates = cron.schedule('*/1 * * * *', async () => {
             page += 1;
         }
 
-// possivel bug ao existir uma task com a tag cs, mas não possui nenhum número ou épico vinculado
-// ele não irá salvar esse id no banco e ficará espamando mensagem para um cliente ou para todos
-
-        if (anySuccess) {
-            await saveProcessed([...new Set(processedIds)]);
+        if (anyProcessed) {
+            const newIds = processedIds.filter(id => !processedBefore.includes(id));
+            if (newIds.length > 0) {
+                await saveProcessed(newIds);
+            }
         }
 
         if (maxUpdated > (cursor.date_updated_gt || 0)) {
