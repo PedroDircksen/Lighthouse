@@ -6,9 +6,11 @@ const {
     getTeamTasks, getTask,
     hasTagCS, isDone,
     extractEpicTaskIdAuto,
-    extractPhoneFromCustomFieldsByName
+    extractPhoneFromCustomFieldsByName,
+    extractEmailFromCustomFieldsByName
 } = require('./integrations/clickup');
 const { generateWhatsAppMessage } = require('./services/notifier');
+const { transporter } = require('./utils/mailService');
 
 const env = {
     token: process.env.CLICKUP_API_TOKEN,
@@ -36,26 +38,17 @@ async function saveCursor(cursor) {
     await insertData('Cursor', cursor);
 }
 
-async function resolveClientJid({ task, env }) {
-    // 1) acha o épico via relacionamento (automático)
+async function resolveClientJidAndEmail({ task, env }) {
     const epicTaskId = extractEpicTaskIdAuto(task.custom_fields);
-    if (!epicTaskId) {
-        console.warn(`Task ${task.id} sem relacionamento de épico detectável. Ignorando.`);
-        return { jid: null, epicName: null };
-    }
+    if (!epicTaskId) return { jid: null, epicName: null, email: null };
 
-    // 2) carrega o épico
     const epic = await getTask({ token: env.token, taskId: epicTaskId });
     const epicName = epic?.name || null;
 
-    // 3) extrai telefone pelo NOME do campo
     const jidFromEpic = extractPhoneFromCustomFieldsByName(epic.custom_fields, env.phoneFieldName);
-    if (!jidFromEpic) {
-        console.warn(`Épico ${epicTaskId} (task ${task.id}) sem telefone no campo "${env.phoneFieldName}".`);
-        return { jid: null, epicName };
-    }
+    const emailFromEpic = extractEmailFromCustomFieldsByName(epic.custom_fields, "Email");
 
-    return { jid: jidFromEpic, epicName };
+    return { jid: jidFromEpic, epicName, email: emailFromEpic };
 }
 
 async function processTask(task, { processedIds, env }) {
@@ -65,7 +58,7 @@ async function processTask(task, { processedIds, env }) {
 
     if (processedIds.includes(task.id)) return { markProcessed: false, sent: false };
 
-    const { jid, epicName } = await resolveClientJid({ task, env });
+    const { jid, epicName, email } = await resolveClientJidAndEmail({ task, env });
     if (!jid) {
         console.warn(`Task ${task.id} sem telefone mapeado (task/épico).`);
         // Marcamos como processada para não ficar tentando para sempre
@@ -97,6 +90,21 @@ async function processTask(task, { processedIds, env }) {
     });
 
     const res = await sendMessage(jid, message);
+
+    if (email) {
+        try {
+            await transporter.sendMail({
+                from: process.env.MAIL_USERNAME,
+                to: email,
+                subject: `Atualização do projeto ${epicName || ''}`,
+                text: message
+            });
+            console.log(`Email enviado para ${email}`);
+        } catch (err) {
+            console.error(`Falha ao enviar email para ${email}:`, err);
+        }
+    }
+
 
     if (res && res.error) {
         console.error(`Falha ao enviar para ${jid} task ${task.id}:`, res.error);

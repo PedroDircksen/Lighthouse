@@ -28,7 +28,7 @@ function extractPhoneFromCustomFields(customFields = [], fieldId) {
     if (!onlyDigits) return null;
 
     const br = onlyDigits.startsWith('55') ? onlyDigits : `55${onlyDigits}`;
-    
+
     return `${br}@s.whatsapp.net`;
 }
 
@@ -94,6 +94,12 @@ function extractPhoneFromCustomFieldsByName(customFields = [], fieldName) {
     return `${withDDI}@s.whatsapp.net`;
 }
 
+function extractEmailFromCustomFieldsByName(customFields, fieldName = "Email") {
+    if (!customFields) return null;
+    const cf = customFields.find(f => f.name?.toLowerCase() === fieldName.toLowerCase());
+    if (!cf || !cf.value) return null;
+    return String(cf.value).trim();
+}
 
 function extractEpicTaskIdAuto(customFields = []) {
     if (!Array.isArray(customFields)) return null;
@@ -131,5 +137,6 @@ module.exports = {
     norm,
     findCustomFieldByName,
     extractPhoneFromCustomFieldsByName,
-    extractEpicTaskIdAuto
+    extractEpicTaskIdAuto,
+    extractEmailFromCustomFieldsByName
 };
